@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
     Copyright (C) 2013-2015 by Hugh Bailey <obs.jim@gmail.com>
                                Zachary Lund <admin@computerquip.com>
                                Philippe Groarke <philippe.groarke@gmail.com>
@@ -77,6 +77,21 @@
 #endif
 
 #include <json11.hpp>
+
+#include "lmsdialog.hpp"
+#include "obsroom.hpp"
+
+#include <QtNetwork/QNetworkAccessManager>
+#include <QtNetwork/QNetworkRequest>
+#include <QtNetwork/QNetworkReply>
+#include <QString>
+#include <QUrl>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QTextCodec>
+#include <QJsonArray>
+#include <QSettings>
+
 
 using namespace json11;
 using namespace std;
@@ -1400,6 +1415,55 @@ static void AddProjectorMenuMonitors(QMenu *parent, QObject *target,
 	"Failed to initialize video.  Your GPU may not be supported, " \
 	"or your graphics drivers may need to be updated."
 
+int qt5_http_post(const QString &url, const QJsonObject &params_json, QJsonObject &rsp) {
+
+	//QJsonValue auth = rsp.value("Authorization");
+	QNetworkAccessManager *m_pHttpMgr = new QNetworkAccessManager();
+	QNetworkRequest requestInfo;
+	requestInfo.setUrl(QUrl(url));
+	requestInfo.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("application/json"));
+	requestInfo.setRawHeader("Authorization", rsp.value("Authorization").toString().toLatin1());//服务器要求的数据头部
+
+	//QJsonObject object;// 构造QJSonObject
+	//object.insert("userName", "admin");
+	//object.insert("password", "123456");
+
+	QJsonDocument document = QJsonDocument(params_json);
+
+	//发送数据
+	QByteArray qByteHttpData = document.toJson();
+	QNetworkReply *reply = m_pHttpMgr->post(requestInfo, qByteHttpData);
+	//添加事件循环机制，返回后再运行后面的
+	QEventLoop eventLoop;
+	QObject::connect(reply, SIGNAL(finished()), &eventLoop, SLOT(quit()));
+	eventLoop.exec();       //block until finish
+
+	//请求收到的结果
+	QByteArray rsp_data = reply->readAll();
+	QJsonDocument document2 = QJsonDocument::fromJson(rsp_data);
+	rsp = document2.object();
+
+	//错误处理
+	QVariant statusCodeV = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+	if (reply->error() != QNetworkReply::NoError) {
+		rsp.insert("hasError", true);
+		rsp.insert("msg", reply->errorString());
+	}
+	rsp.insert("statusCode", statusCodeV.toInt());
+
+	//QString rsp_qstr;
+	//string rsp_std_str = rsp_qstr.prepend(rsp_data).toStdString();
+
+	//QTextCodec *codec = QTextCodec::codecForName("utf8");
+	//QString responseData = codec->toUnicode(rsp_data);
+	//string rsp_std_utf8 = responseData.toStdString();
+
+
+
+	reply->deleteLater();
+	return statusCodeV.toInt();
+}
+
 void OBSBasic::OBSInit()
 {
 	ProfileScope("OBSBasic::OBSInit");
@@ -1426,6 +1490,189 @@ void OBSBasic::OBSInit()
 		throw "Failed to load basic.ini";
 	if (!ResetAudio())
 		throw "Failed to initialize audio";
+
+	char serviceJsonPath[512];
+	GetProfilePath(serviceJsonPath, sizeof(serviceJsonPath),
+		"service.json");
+
+
+	QString  uname;
+	QString  password;
+	QString room_text;
+	QJsonObject rsp_json;
+	QJsonObject obs_stream_map;
+
+	Ui::LoginDialog login_ui;
+	QDialog *login_dialog = new QDialog;
+	login_ui.setupUi(login_dialog);
+
+
+	login_dialog->setFocus();
+	login_dialog->setModal(true);
+	int login_ret = login_dialog->exec();
+
+	Ui::SelectRoomDialog room_ui;
+	QDialog *room_dialog = new QDialog;
+	room_ui.setupUi(room_dialog);
+
+
+	room_dialog->setFocus();
+	room_dialog->setModal(true);
+
+	if (1 != login_ret) {
+		login_dialog->destroyed();
+		QJsonObject error;
+		error.insert("userclose", true);
+		error.insert("msg", "user close or cancel login ...");
+		throw error;
+		//obs_shutdown();
+	}
+	else {
+		uname = login_ui.lineEdit->text();
+		password = login_ui.lineEdit_2->text();
+		//QMessageBox::warning(NULL, uname.toStdString().c_str(), password.toStdString().c_str());
+		QString appdir = App()->applicationDirPath();
+		appdir.append("/stream.ini");
+
+		QSettings stream_ini(appdir, QSettings::IniFormat);
+		QString login_url = stream_ini.value("stream/login").toString();
+		QString rooms_url = stream_ini.value("stream/rooms").toString();
+		QString lives_url = stream_ini.value("stream/lives").toString();
+
+
+
+
+		QJsonObject post_json;// 构造QJSonObject
+		post_json.insert("userName", uname);
+		post_json.insert("password", password);
+
+		rsp_json.insert("Authorization", "111");
+
+		qt5_http_post(login_url, post_json, rsp_json);
+		if (200 != rsp_json.value("statusCode").toInt()
+			|| (true == rsp_json.contains("hasError") && true == rsp_json.value("hasError").toBool())
+			|| false == rsp_json.contains("token")) {
+			//blog(LOG_ERROR, "login rsponse: %s", QString(QJsonDocument(rsp_json).toJson()).toStdString().c_str());
+			login_dialog->destroyed();
+			QString rsp_qstring = QString(QJsonDocument(rsp_json).toJson());
+			throw rsp_qstring;
+		}
+		blog(LOG_INFO, "%s", QString(QJsonDocument(rsp_json).toJson()).toStdString().c_str());
+		QString auth_token = rsp_json.value("token").toString();
+		rsp_json.insert("Authorization", auth_token);
+		post_json.remove("userName");
+		post_json.remove("password");
+
+		qt5_http_post(rooms_url, post_json, rsp_json);
+		if (200 != rsp_json.value("statusCode").toInt()
+			|| (true == rsp_json.contains("hasError") && true == rsp_json.value("hasError").toBool())) {
+			login_dialog->destroyed();
+			QString rsp_qstring = QString(QJsonDocument(rsp_json).toJson());
+			throw rsp_qstring;
+		}
+		blog(LOG_INFO, "%s", QString(QJsonDocument(rsp_json).toJson()).toStdString().c_str());
+
+
+		QJsonArray its = rsp_json.value("items").toArray();
+		int its_len = its.size();
+		int index = 0;
+		for (index = 0; index < its_len; index++) {
+			QJsonObject tmp = its.at(index).toObject();
+			QString tmp_live_obs_stream_domain_name = tmp.value("domainName").toString();
+			QString tmp_live_obs_stream_category_name = tmp.value("categoryName").toString();
+			QString tmp_live_obs_stream_name = tmp.value("name").toString();
+
+			tmp_live_obs_stream_domain_name.append("/");
+			tmp_live_obs_stream_domain_name.append(tmp_live_obs_stream_category_name);
+			tmp_live_obs_stream_domain_name.append("/");
+			tmp_live_obs_stream_domain_name.append(tmp_live_obs_stream_name);
+			QString tmp_live_obs_stream_id = tmp.value("id").toString();
+			room_ui.comboBox->addItem(tmp_live_obs_stream_domain_name);
+
+			obs_stream_map.insert(tmp_live_obs_stream_domain_name, tmp_live_obs_stream_id);
+			tmp_live_obs_stream_domain_name.clear();
+
+		}
+
+
+
+		int room_ret = room_dialog->exec();
+		if (1 != room_ret) {
+			login_dialog->destroyed();
+			room_dialog->destroyed();
+			QJsonObject error;
+			error.insert("userclose", true);
+			error.insert("msg", "user close or cancel obs room select ...");
+			throw error;
+		}
+		else {
+			room_text = room_ui.comboBox->currentText();
+
+			rsp_json.insert("Authorization", auth_token);
+			post_json.insert("id", obs_stream_map.value(room_text).toString());
+
+			qt5_http_post(lives_url, post_json, rsp_json);
+			if (200 != rsp_json.value("statusCode").toInt()
+				|| (true == rsp_json.contains("hasError") && true == rsp_json.value("hasError").toBool())
+				|| false == rsp_json.contains("item")) {
+				QString rsp_qstring = QString(QJsonDocument(rsp_json).toJson());
+				throw rsp_qstring;
+			}
+			//QMessageBox::warning(NULL, "room", room_text.toStdString().c_str());
+			blog(LOG_INFO, "select room id: %s", obs_stream_map.value(room_text).toString().toStdString().c_str());
+			blog(LOG_INFO, "%s", QString(QJsonDocument(rsp_json).toJson()).toStdString().c_str());
+		}
+	}
+
+	login_dialog->destroyed();
+	room_dialog->destroyed();
+
+	///////////////////////////////
+
+	QJsonObject livePushUrl_obj = rsp_json.value("item").toObject();
+	if (false == livePushUrl_obj.contains("livePushUrl") || livePushUrl_obj.value("livePushUrl").toString().length() < 7) {
+		rsp_json.insert("livePushUrl", "invalidate url");
+		throw rsp_json;
+	}
+
+	QString livePushUrl = livePushUrl_obj.value("livePushUrl").toString();
+	QString livePushUrl_server = "";
+	QString livePushUrl_key = "";
+	QString obs_stream_id = obs_stream_map.value(room_text).toString();
+
+	int pos = livePushUrl.indexOf(obs_stream_id);
+	if (pos < 0) {
+		rsp_json.insert("obs_stream_id", "obs stream id not found in rsp");
+		rsp_json.insert("obs_stream_id", obs_stream_id);
+		throw rsp_json;
+	}
+	livePushUrl_server = livePushUrl.left(pos);
+	livePushUrl_key = livePushUrl.mid(pos);
+
+	obs_data_t *data_000 = obs_data_create();
+	obs_data_t *settings_000 = obs_data_create();
+
+	//obs_data_set_string(settings_000, "server", "rtmp://pili-publish.hanpu-lms.com/hanpu-lms/");
+	//obs_data_set_string(settings_000, "key", "00000abc?e=1541088744&token=rwOU");
+
+	obs_data_set_string(settings_000, "server", livePushUrl_server.toStdString().c_str());
+	obs_data_set_string(settings_000, "key", livePushUrl_key.toStdString().c_str());
+
+	obs_data_set_string(settings_000, "username", uname.toStdString().c_str());
+	obs_data_set_string(settings_000, "password", password.toStdString().c_str());
+	obs_data_set_bool(settings_000, "use_auth", true);
+
+	obs_data_set_string(data_000, "type", "rtmp_custom");
+	obs_data_set_obj(data_000, "settings", settings_000);
+
+	if (!obs_data_save_json_safe(data_000, serviceJsonPath, "tmp", "bak"))
+		blog(LOG_WARNING, "Failed to save service");
+
+	obs_data_release(data_000);
+	obs_data_release(settings_000);
+
+
+
 
 	ret = ResetVideo();
 

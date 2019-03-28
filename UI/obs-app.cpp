@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
     Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
 
     This program is free software: you can redistribute it and/or modify
@@ -54,6 +54,10 @@
 #endif
 
 #include <iostream>
+
+#include <QJsonObject>
+#include <QJsonDocument>
+
 
 using namespace std;
 
@@ -1731,9 +1735,17 @@ run:
 
 		return program.exec();
 
-	} catch (const char *error) {
+	}
+	catch (const char *error) {
 		blog(LOG_ERROR, "%s", error);
 		OBSErrorBox(nullptr, "%s", error);
+	}
+	catch (const QString &error) {
+		blog(LOG_ERROR, "%s", error.toStdString().c_str());
+		OBSErrorBox(nullptr, "%s", error.toStdString().c_str());
+	}
+	catch (const QJsonObject &error) {
+		blog(LOG_ERROR, "%s", QString(QJsonDocument(error).toJson()).toStdString().c_str());
 	}
 
 	return ret;

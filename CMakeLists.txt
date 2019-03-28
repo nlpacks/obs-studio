@@ -8,6 +8,11 @@ endif()
 project(obs-studio)
 
 option(BUILD_CAPTIONS "Build captions" FALSE)
+set(DepsPath "C:/tools/lms_obs/obs-studio_22.0.3/dependencies2017/win64")
+set(QTDIR "C:/tools/lms_obs/Qt5.9.7/5.9.7/msvc2017_64")
+set(FFmpegPath "C:/tools/lms_obs/obs-studio_22.0.3/dependencies2017/win64")
+set(x264Path "C:/tools/lms_obs/obs-studio_22.0.3/dependencies2017/win64")
+set(curlPath "C:/tools/lms_obs/obs-studio_22.0.3/dependencies2017/win64")
 
 if(WIN32)
 	if (QTDIR OR DEFINED ENV{QTDIR} OR DEFINED ENV{QTDIR32} OR DEFINED ENV{QTDIR64})
